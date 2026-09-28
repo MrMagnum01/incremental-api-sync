@@ -114,6 +114,12 @@ def retry_fetch(source, token, cursor, clock):
             raise RetryBudgetExhausted(
                 f"gave up after {attempts} attempt(s), {elapsed:.1f}s elapsed")
         clock.sleep(wait)
+        # The sleep itself can overshoot; re-check the monotonic deadline immediately before
+        # dispatching the next attempt (Astra r3: a 1 s sleep ending at 122 s must not dispatch).
+        elapsed = clock.now() - start
+        if elapsed >= MAX_ELAPSED_SECONDS:
+            raise RetryBudgetExhausted(
+                f"gave up after {attempts} attempt(s), {elapsed:.1f}s elapsed (sleep overshoot)")
 
 
 # The only outcomes apply_op can legitimately report for each operation kind. A
@@ -123,6 +129,11 @@ _ALLOWED_OUTCOMES_BY_OP = {
     "upsert": frozenset({"inserted", "updated", "unchanged"}),
     "delete": frozenset({"deleted", "unchanged"}),
 }
+
+
+def _valid_outcome(outcome, op: str) -> bool:
+    # Only a plain string can be an outcome; lists/dicts (unhashable) are malformed, never a TypeError.
+    return isinstance(outcome, str) and outcome in _ALLOWED_OUTCOMES_BY_OP.get(op, frozenset())
 
 
 def _confirms(confirmed: Optional[dict], key: str, r, op: str, digest: str) -> bool:
@@ -141,7 +152,7 @@ def _confirms(confirmed: Optional[dict], key: str, r, op: str, digest: str) -> b
         and confirmed.get("version") == r.version
         and confirmed.get("op") == op
         and confirmed.get("digest") == digest
-        and confirmed.get("outcome") in _ALLOWED_OUTCOMES_BY_OP.get(op, frozenset())
+        and _valid_outcome(confirmed.get("outcome"), op)
     )
 
 
@@ -153,7 +164,7 @@ def apply_record(dest, r, ack_mode_fn):
     ack_mode = ack_mode_fn(r.namespace, r.id, r.version, op) if ack_mode_fn else "ok"
     try:
         outcome = dest.apply_op(key, r.namespace, r.id, r.version, op, digest, payload, ack_mode=ack_mode)
-        if outcome not in _ALLOWED_OUTCOMES_BY_OP.get(op, frozenset()):
+        if not _valid_outcome(outcome, op):
             return "unknown", f"destination returned an invalid direct outcome: {outcome!r}"
         return outcome, None
     except AckLost:
