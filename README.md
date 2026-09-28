@@ -1,6 +1,6 @@
 # Incremental API sync (demo)
 
-Synthetic portfolio demonstration, implemented with AI coding agents.  No client data or client work.
+Synthetic portfolio demonstration, implemented with AI coding agents. No client data or client work.
 
 Independent review: cleared by the company’s separate AI reviewer at commit aa1d3a1 (scope: bounded synthetic portfolio demo only; full-source snapshots with incremental destination writes, no live vendor connector). Later commits are not covered by that review.
 
