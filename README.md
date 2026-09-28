@@ -1,8 +1,8 @@
 # Incremental API sync (demo)
 
-Synthetic portfolio demonstration, implemented with AI coding agents; independent review pending. No client data or client work.
+Synthetic portfolio demonstration, implemented with AI coding agents.  No client data or client work.
 
-Independent review: cleared by the company's reviewer at commit aa1d3a1 (scope: bounded synthetic portfolio demo only; full-source snapshots with incremental destination writes, no live vendor connector). Later commits are not covered by that review.
+Independent review: cleared by the company’s separate AI reviewer at commit aa1d3a1 (scope: bounded synthetic portfolio demo only; full-source snapshots with incremental destination writes, no live vendor connector). Later commits are not covered by that review.
 
 One-way **full-snapshot reconciliation with incremental destination writes**: every completed run rescans the source's entire current record set (not just what changed since the last checkpoint) and applies it against a mock destination, so only the records that are actually new or changed produce a write. This is not incremental *source* fetching and it does not retain source-side version history across runs — see "Pagination contract" and "Assumptions" below. Both source and destination are local, in-process contracts — clearly synthetic, not any real SaaS, not bound to a network port.
 
