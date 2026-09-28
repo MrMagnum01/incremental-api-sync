@@ -7,10 +7,13 @@ _EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 
 
 class Clock:
-    """Real wall-clock. Used only by the CLI entrypoint, never by tests."""
+    """Real clock, used only by the CLI entrypoint, never by tests. `now()` uses a
+    monotonic source so retry/elapsed-budget accounting is never disturbed by a
+    wall-clock adjustment (NTP step, DST, manual change); `utcnow()` stays on the
+    wall clock since HTTP-date Retry-After values are calendar timestamps."""
 
     def now(self) -> float:
-        return time.time()
+        return time.monotonic()
 
     def utcnow(self) -> datetime.datetime:
         return datetime.datetime.now(datetime.timezone.utc)
