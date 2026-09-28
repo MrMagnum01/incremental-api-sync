@@ -16,8 +16,17 @@ def payload_digest(payload: dict) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def _escape_key_part(part: str) -> str:
+    """Escape backslash and the ':' separator so concatenated components can never
+    collide: namespace='a:b', id='c' must not produce the same key as namespace='a',
+    id='b:c'."""
+    return str(part).replace("\\", "\\\\").replace(":", "\\:")
+
+
 def op_key(namespace: str, id: str, version: int, op: str) -> str:
     """Idempotency key: namespace + record id + source version + operation.
     Version-bound so a later legitimate update is never swallowed as a duplicate
-    of an earlier one, and a replay of the same version+op is always recognised."""
-    return f"{namespace}:{id}:{version}:{op}"
+    of an earlier one, and a replay of the same version+op is always recognised.
+    Each component is escaped independently so a separator embedded in a namespace
+    or id can never be mistaken for the join between fields."""
+    return ":".join(_escape_key_part(p) for p in (namespace, id, version, op))

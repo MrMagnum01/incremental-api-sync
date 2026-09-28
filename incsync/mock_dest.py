@@ -51,11 +51,19 @@ CREATE TABLE IF NOT EXISTS checkpoint (
     cursor_id TEXT,
     schema_version INTEGER NOT NULL,
     status TEXT NOT NULL,
+    source_id TEXT,
+    dest_id TEXT,
+    advertised_total INTEGER,
+    page_size INTEGER,
+    fetched_count INTEGER,
+    fetch_cursor_updated_at REAL,
+    fetch_cursor_id TEXT,
     updated_at REAL NOT NULL
 );
 """
 
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_STATUSES = ("in_progress", "complete")
+CHECKPOINT_SCHEMA_VERSION = 2
 
 
 class Destination:
@@ -64,6 +72,14 @@ class Destination:
         self.conn = sqlite3.connect(db_path, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.executescript(SCHEMA)
+        self._unreadable_confirmations: set = set()
+
+    @property
+    def identity(self) -> str:
+        """Stable identity of this destination instance, bound into the checkpoint
+        so a swap to a different destination file under the same sync_id is caught
+        instead of silently trusted."""
+        return self.db_path
 
     def close(self):
         self.conn.close()
@@ -94,6 +110,11 @@ class Destination:
         )
 
     def get_op(self, op_key: str):
+        if op_key in self._unreadable_confirmations:
+            # One-shot: models a transient outage at confirmation time, not a
+            # permanently unreadable key -- a later retry must be able to read it.
+            self._unreadable_confirmations.discard(op_key)
+            raise DestinationUnavailable(f"confirmation read failed for {op_key}")
         cur = self.conn.execute(
             "SELECT op_key,namespace,id,version,op,digest,outcome FROM applied_ops WHERE op_key=?",
             (op_key,))
@@ -114,6 +135,13 @@ class Destination:
           "lost_ack_unconfirmable"- raises DestinationUnavailable *before* committing
                                      anything and before any read can confirm it either
                                      -> the caller must record UNKNOWN.
+          "committed_then_confirmation_unreadable" - commit succeeds (the write is
+                                     durable, unlike "lost_ack_unconfirmable" above),
+                                     but the acknowledgement is lost AND the follow-up
+                                     get_op() read for this exact key also fails ->
+                                     the caller must record UNKNOWN even though the
+                                     write already happened; a later replay under the
+                                     same key must still see it as already-applied.
         Raises OpKeyReused / StaleVersion for conflicts; caller records those as failed.
         """
         if ack_mode == "lost_ack_unconfirmable":
@@ -168,6 +196,10 @@ class Destination:
         if ack_mode == "lost_ack_confirmable":
             raise AckLost(op_key)
 
+        if ack_mode == "committed_then_confirmation_unreadable":
+            self._unreadable_confirmations.add(op_key)
+            raise DestinationUnavailable("write committed but confirmation read failed")
+
         return outcome
 
     def conflicts_for(self, namespace: str, id: str):
@@ -187,7 +219,9 @@ class Destination:
     # -- checkpoint --------------------------------------------------------
     def load_checkpoint(self, sync_id: str):
         cur = self.conn.execute(
-            "SELECT sync_id,snapshot_token,cursor_updated_at,cursor_id,schema_version,status "
+            "SELECT sync_id,snapshot_token,cursor_updated_at,cursor_id,schema_version,status,"
+            "source_id,dest_id,advertised_total,page_size,fetched_count,"
+            "fetch_cursor_updated_at,fetch_cursor_id "
             "FROM checkpoint WHERE sync_id=?", (sync_id,))
         row = cur.fetchone()
         if not row:
@@ -196,16 +230,32 @@ class Destination:
             "sync_id": row[0], "snapshot_token": row[1],
             "cursor": (row[2], row[3]) if row[2] is not None else None,
             "schema_version": row[4], "status": row[5],
+            "source_id": row[6], "dest_id": row[7],
+            "advertised_total": row[8], "page_size": row[9], "fetched_count": row[10],
+            "fetch_cursor": (row[11], row[12]) if row[11] is not None else None,
         }
 
-    def save_checkpoint(self, sync_id: str, snapshot_token: str, cursor, status: str) -> None:
+    def save_checkpoint(self, sync_id: str, snapshot_token: str, cursor, status: str,
+                         source_id: Optional[str] = None, dest_id: Optional[str] = None,
+                         advertised_total: Optional[int] = None, page_size: Optional[int] = None,
+                         fetched_count: Optional[int] = None, fetch_cursor=None) -> None:
         now = time.time()
         cur_updated, cur_id = cursor if cursor else (None, None)
+        fetch_cur_updated, fetch_cur_id = fetch_cursor if fetch_cursor else (None, None)
         self.conn.execute(
-            "INSERT INTO checkpoint(sync_id,snapshot_token,cursor_updated_at,cursor_id,schema_version,status,updated_at) "
-            "VALUES(?,?,?,?,?,?,?) "
+            "INSERT INTO checkpoint(sync_id,snapshot_token,cursor_updated_at,cursor_id,schema_version,"
+            "status,source_id,dest_id,advertised_total,page_size,fetched_count,"
+            "fetch_cursor_updated_at,fetch_cursor_id,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(sync_id) DO UPDATE SET snapshot_token=excluded.snapshot_token, "
             "cursor_updated_at=excluded.cursor_updated_at, cursor_id=excluded.cursor_id, "
-            "schema_version=excluded.schema_version, status=excluded.status, updated_at=excluded.updated_at",
-            (sync_id, snapshot_token, cur_updated, cur_id, CHECKPOINT_SCHEMA_VERSION, status, now),
+            "schema_version=excluded.schema_version, status=excluded.status, "
+            "source_id=excluded.source_id, dest_id=excluded.dest_id, "
+            "advertised_total=excluded.advertised_total, page_size=excluded.page_size, "
+            "fetched_count=excluded.fetched_count, "
+            "fetch_cursor_updated_at=excluded.fetch_cursor_updated_at, "
+            "fetch_cursor_id=excluded.fetch_cursor_id, updated_at=excluded.updated_at",
+            (sync_id, snapshot_token, cur_updated, cur_id, CHECKPOINT_SCHEMA_VERSION, status,
+             source_id, dest_id, advertised_total, page_size, fetched_count,
+             fetch_cur_updated, fetch_cur_id, now),
         )

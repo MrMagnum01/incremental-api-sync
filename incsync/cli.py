@@ -39,10 +39,12 @@ def main(argv=None) -> int:
         lock_path = os.path.join(args.state_dir, "runner.lock")
         clock = Clock()
         result = run_sync(source, dest, SYNC_ID, lock_path, clock,
-                           crash_at=args.crash_at, crash_hard=True)
+                           crash_at=args.crash_at, crash_hard=True, source_id="widgets")
         print(json.dumps(result.as_dict()))
         dest.close()
-        return 0 if result.status == "complete" else 1
+        # `status` is fetch completeness only; a failed or unknown write must still
+        # make the process exit non-zero even when the fetch itself completed.
+        return 0 if result.ok else 1
     return 2
 
 
